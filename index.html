@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pose Comparison</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet@2.2.2"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+    }
+    video, canvas {
+      border: 1px solid black;
+    }
+    #score {
+      font-size: 24px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Pose Comparison</h1>
+
+  <div>
+    <video id="refVideo" width="400" muted loop></video>
+    <video id="liveVideo" width="400" autoplay muted></video>
+    <canvas id="canvas" width="400" height="400"></canvas>
+  </div>
+
+  <div id="score">Similarity Score: --</div>
+
+  <script>
+    const refVideo = document.getElementById('refVideo');
+    const liveVideo = document.getElementById('liveVideo');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const scoreDisplay = document.getElementById('score');
+
+    let net;
+    let refPoses = [];
+    let currentRefPose = null;
+
+    // Load reference video
+    refVideo.src = "video.mov";
+    refVideo.play();
+
+    // Start webcam
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      liveVideo.srcObject = stream;
+      await liveVideo.play();
+    }
+
+    async function loadModel() {
+      net = await posenet.load();
+    }
+
+    function normalizeKeypoints(keypoints, width, height) {
+      return keypoints.map(kp => ({
+        x: kp.position.x / width,
+        y: kp.position.y / height,
+        score: kp.score
+      }));
+    }
+
+    function calculateSimilarity(pose1, pose2) {
+      const THRESHOLD = 0.9;
+      let totalDist = 0;
+      let matched = 0;
+
+      for (let i = 0; i < pose1.length; i++) {
+        const kp1 = pose1[i];
+        const kp2 = pose2[i];
+        if (kp1.score > THRESHOLD && kp2.score > THRESHOLD) {
+          const dx = kp1.x - kp2.x;
+          const dy = kp1.y - kp2.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          totalDist += dist;
+          matched++;
+        }
+      }
+
+      if (matched === 0) return 0;
+      const avgDist = totalDist / matched;
+      const similarity = Math.max(0, 1 - avgDist * 2);
+      
+      return similarity * 100;
+    }
+
+    function drawKeypoints(keypoints, scale = 1) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = 'red';
+      keypoints.forEach(kp => {
+        if (kp.score > 0.2) {
+          ctx.beginPath();
+          ctx.arc(kp.x * canvas.width, kp.y * canvas.height, 4, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+      });
+    }
+
+    async function getRefPose() {
+      const pose = await net.estimateSinglePose(refVideo, {
+        flipHorizontal: false
+      });
+      return normalizeKeypoints(pose.keypoints, refVideo.videoWidth, refVideo.videoHeight);
+    }
+
+    async function runComparisonLoop() {
+      setInterval(async () => {
+        if (!net || !liveVideo || !refVideo) return;
+
+        const livePose = await net.estimateSinglePose(liveVideo, {
+          flipHorizontal: true
+        });
+
+        const refPose = await getRefPose();
+
+        const normalizedLive = normalizeKeypoints(livePose.keypoints, liveVideo.videoWidth, liveVideo.videoHeight);
+        const similarity = calculateSimilarity(normalizedLive, refPose);
+
+        drawKeypoints(normalizedLive);
+        scoreDisplay.textContent = `Similarity Score: ${similarity.toFixed(2)}%`;
+      }, 1000);
+    }
+
+    async function init() {
+      await loadModel();
+      await startCamera();
+      runComparisonLoop();
+    }
+
+    init();
+  </script>
+</body>
+</html>
