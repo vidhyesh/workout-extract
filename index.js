@@ -10,7 +10,7 @@ const VIDEO_URL = 'https://thravos.nyc3.digitaloceanspaces.com/feed/fb87d5b0-00d
 const VIDEO_PATH = path.join(__dirname, 'video.mov');
 const FRAMES_DIR = path.join(__dirname, 'frames');
 
-// Step 1: Download video
+
 function downloadVideo(url, dest) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
@@ -26,7 +26,6 @@ function downloadVideo(url, dest) {
   });
 }
 
-// Step 2: Extract frames using FFmpeg
 function extractFrames(videoPath, outputDir, fps = 1) {
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
@@ -35,7 +34,7 @@ function extractFrames(videoPath, outputDir, fps = 1) {
 
     ffmpeg(videoPath)
       .outputOptions([
-        `-vf fps=${fps}`, // Extract frames at given fps
+        `-vf fps=${fps}`
       ])
       .output(outputPattern)
       .on('start', (cmd) => console.log('Started FFmpeg:', cmd))
@@ -49,7 +48,6 @@ function extractFrames(videoPath, outputDir, fps = 1) {
 }
 
 
-// Step 3: Run pose detection
 async function detectPoseOnFrames(dir) {
   const net = await posenet.load();
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.jpg'));
@@ -75,16 +73,15 @@ async function detectPoseOnFrames(dir) {
       keypoints: pose.keypoints
     });
 
-    console.log(`✅ Pose extracted from ${file}`);
+    console.log(`Pose extracted from ${file}`);
   }
 
   const outputPath = path.join(__dirname, 'keypoints.json');
   fs.writeFileSync(outputPath, JSON.stringify(results, null, 2));
-  console.log(`🎯 Keypoints saved to ${outputPath}`);
+  console.log(`Keypoints saved to ${outputPath}`);
 }
 
 
-// Full Pipeline
 (async () => {
   try {
     console.log('Downloading video...');
@@ -96,8 +93,8 @@ async function detectPoseOnFrames(dir) {
     console.log('Running pose detection...');
     await detectPoseOnFrames(FRAMES_DIR);
 
-    console.log('✅ Done.');
+    console.log('Done.');
   } catch (err) {
-    console.error('❌ Error:', err.message || err);
+    console.error('Error:', err.message || err);
   }
 })();
