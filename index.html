@@ -84,7 +84,7 @@
       const avgDist = totalDist / matched;
       const similarity = Math.max(0, 1 - avgDist * 2);
       
-      return similarity * 100;
+      return similarity;
     }
 
     function drawKeypoints(keypoints, scale = 1) {
