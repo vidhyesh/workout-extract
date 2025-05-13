@@ -1,33 +1,39 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <title>Pose Comparison</title>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet@2.2.2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet"></script>
   <style>
     body {
       font-family: Arial, sans-serif;
     }
-    video, canvas {
+
+    video,
+    canvas {
       border: 1px solid black;
+      max-width: 100%;
     }
+
     #score {
       font-size: 24px;
       margin-top: 10px;
     }
   </style>
 </head>
+
 <body>
   <h1>Pose Comparison</h1>
 
   <div>
-    <video id="refVideo" width="400" muted loop></video>
-    <video id="liveVideo" width="400" autoplay muted></video>
-    <canvas id="canvas" width="400" height="400"></canvas>
+    <video id="refVideo" width="400" muted loop playsinline></video>
+    <video id="liveVideo" width="400" autoplay muted playsinline></video>
+    <canvas id="canvas"></canvas>
   </div>
 
-  <div id="score">Similarity Score: --</div>
+  <div id="score">Similarity Score: --%</div>
 
   <script>
     const refVideo = document.getElementById('refVideo');
@@ -37,26 +43,61 @@
     const scoreDisplay = document.getElementById('score');
 
     let net;
-    let refPoses = [];
-    let currentRefPose = null;
+    let previousLiveKeypoints = null;
 
-    // Load reference video
-    refVideo.src = "video.mov";
-    refVideo.play();
+    const connectedParts = [
+      ['leftShoulder', 'leftElbow'], ['leftElbow', 'leftWrist'],
+      ['rightShoulder', 'rightElbow'], ['rightElbow', 'rightWrist'],
+      ['leftShoulder', 'rightShoulder'],
+      ['leftHip', 'rightHip'],
+      ['leftShoulder', 'leftHip'], ['rightShoulder', 'rightHip'],
+      ['leftHip', 'leftKnee'], ['leftKnee', 'leftAnkle'],
+      ['rightHip', 'rightKnee'], ['rightKnee', 'rightAnkle']
+    ];
 
-    // Start webcam
-    async function startCamera() {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      liveVideo.srcObject = stream;
-      await liveVideo.play();
+    function getPart(keypoints, partName) {
+      return keypoints.find(kp => kp.part === partName);
     }
 
-    async function loadModel() {
-      net = await posenet.load();
+    function drawPose(keypoints, color, ih = 0.5) {
+      const offsetY = canvas.height * ih;
+
+      ctx.fillStyle = color;
+
+      keypoints.forEach(kp => {
+        if (kp.score > 0.2) {
+          const adjustedX = kp.x * canvas.width;
+          const adjustedY = (kp.y * canvas.height) + offsetY;
+
+          ctx.beginPath();
+          ctx.arc(adjustedX, adjustedY, 4, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+      });
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+
+      connectedParts.forEach(([partA, partB]) => {
+        const kpA = getPart(keypoints, partA);
+        const kpB = getPart(keypoints, partB);
+        if (kpA && kpB && kpA.score > 0.2 && kpB.score > 0.2) {
+          const xA = kpA.x * canvas.width;
+          const yA = (kpA.y * canvas.height) + offsetY;
+          const xB = kpB.x * canvas.width;
+          const yB = (kpB.y * canvas.height) + offsetY;
+
+          ctx.beginPath();
+          ctx.moveTo(xA, yA);
+          ctx.lineTo(xB, yB);
+          ctx.stroke();
+        }
+      });
     }
 
     function normalizeKeypoints(keypoints, width, height) {
       return keypoints.map(kp => ({
+        part: kp.part,
         x: kp.position.x / width,
         y: kp.position.y / height,
         score: kp.score
@@ -82,47 +123,76 @@
 
       if (matched === 0) return 0;
       const avgDist = totalDist / matched;
-      const similarity = Math.max(0, 1 - avgDist * 2);
-      
-      return similarity;
+      return Math.max(0, 1 - avgDist * 4); // Adjust multiplier for strictness
     }
 
-    function drawKeypoints(keypoints, scale = 1) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = 'red';
-      keypoints.forEach(kp => {
-        if (kp.score > 0.2) {
-          ctx.beginPath();
-          ctx.arc(kp.x * canvas.width, kp.y * canvas.height, 4, 0, 2 * Math.PI);
-          ctx.fill();
+    function calculateMovementAmount(current, previous) {
+      if (!previous) return Infinity;
+
+      let totalMovement = 0;
+      let movedPoints = 0;
+
+      for (let i = 0; i < current.length; i++) {
+        const curr = current[i];
+        const prev = previous[i];
+        if (curr.score > 0.5 && prev.score > 0.5) {
+          const dx = curr.x - prev.x;
+          const dy = curr.y - prev.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          totalMovement += dist;
+          movedPoints++;
         }
-      });
+      }
+
+      if (movedPoints === 0) return 0;
+      return totalMovement / movedPoints;
     }
 
-    async function getRefPose() {
-      const pose = await net.estimateSinglePose(refVideo, {
-        flipHorizontal: false
-      });
-      return normalizeKeypoints(pose.keypoints, refVideo.videoWidth, refVideo.videoHeight);
+    async function loadModel() {
+      net = await posenet.load();
+    }
+
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      liveVideo.srcObject = stream;
+      await liveVideo.play();
     }
 
     async function runComparisonLoop() {
+      let refPoseQueue = [];
+
       setInterval(async () => {
-        if (!net || !liveVideo || !refVideo) return;
+        if (!net || !liveVideo || !refVideo || liveVideo.readyState < 2 || refVideo.readyState < 2) return;
 
-        const livePose = await net.estimateSinglePose(liveVideo, {
-          flipHorizontal: true
-        });
+        canvas.width = refVideo.videoWidth;
+        canvas.height = refVideo.videoHeight;
 
-        const refPose = await getRefPose();
+        const livePoseRaw = await net.estimateSinglePose(liveVideo, { flipHorizontal: true });
+        const refPoseRaw = await net.estimateSinglePose(refVideo, { flipHorizontal: false });
 
-        const normalizedLive = normalizeKeypoints(livePose.keypoints, liveVideo.videoWidth, liveVideo.videoHeight);
-        const similarity = calculateSimilarity(normalizedLive, refPose);
+        const normalizedLive = normalizeKeypoints(livePoseRaw.keypoints, liveVideo.videoWidth, liveVideo.videoHeight);
+        const normalizedRef = normalizeKeypoints(refPoseRaw.keypoints, refVideo.videoWidth, refVideo.videoHeight);
 
-        drawKeypoints(normalizedLive);
-        scoreDisplay.textContent = `Similarity Score: ${similarity.toFixed(2)}%`;
+        // Add ref pose to queue and delay it by 1 frame (~1s)
+        refPoseQueue.push(normalizedRef);
+        if (refPoseQueue.length > 1) {
+          const delayedRef = refPoseQueue.shift();  // get 1s old pose
+
+          const similarity = calculateSimilarity(normalizedLive, delayedRef);
+          scoreDisplay.textContent = `Similarity Score: ${(similarity * 100).toFixed(2)}%`;
+
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          drawPose(delayedRef, 'blue', 0.2);
+          drawPose(normalizedLive, 'red');
+        }
       }, 1000);
+
     }
+
+    refVideo.src = "video.mov";
+    refVideo.onloadeddata = () => {
+      refVideo.play();
+    };
 
     async function init() {
       await loadModel();
@@ -133,4 +203,5 @@
     init();
   </script>
 </body>
+
 </html>
